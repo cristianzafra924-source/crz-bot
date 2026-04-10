@@ -58,20 +58,49 @@ def upload_file(path, content_bytes, message):
     return r.status_code in (200, 201)
 
 def get_app_py():
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/aplicaci%C3%B3n.py"
-    r = requests.get(url, headers=github_headers(), params={"ref": GITHUB_BRANCH})
-    if r.status_code == 200:
-        data = r.json()
-        content = base64.b64decode(data["content"]).decode("utf-8")
-        return content, data["sha"]
+    # Use git trees API to find the file regardless of encoding
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/git/trees/{GITHUB_BRANCH}"
+    r = requests.get(url, headers=github_headers())
+    if r.status_code != 200:
+        return None, None
+    
+    tree = r.json().get("tree", [])
+    app_file = None
+    for item in tree:
+        name = item.get("path", "")
+        if "aplicaci" in name.lower() and name.endswith(".py"):
+            app_file = item
+            break
+    
+    if not app_file:
+        return None, None
+    
+    # Get file content using blob SHA
+    blob_url = f"{GITHUB_API}/repos/{GITHUB_REPO}/git/blobs/{app_file['sha']}"
+    r2 = requests.get(blob_url, headers=github_headers())
+    if r2.status_code != 200:
+        return None, None
+    
+    data = r2.json()
+    content = base64.b64decode(data["content"]).decode("utf-8")
+    
+    # Get the file SHA for update (need contents API SHA, not blob SHA)
+    encoded_name = requests.utils.quote(app_file["path"], safe="")
+    contents_url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{encoded_name}"
+    r3 = requests.get(contents_url, headers=github_headers(), params={"ref": GITHUB_BRANCH})
+    if r3.status_code == 200:
+        file_sha = r3.json()["sha"]
+        return content, (file_sha, app_file["path"])
     return None, None
 
-def update_app_py(new_content, sha, commit_msg):
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/aplicaci%C3%B3n.py"
+def update_app_py(new_content, sha_tuple, commit_msg):
+    file_sha, filepath = sha_tuple
+    encoded = requests.utils.quote(filepath, safe="")
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{encoded}"
     data = {
         "message": commit_msg,
         "content": base64.b64encode(new_content.encode("utf-8")).decode(),
-        "sha": sha,
+        "sha": file_sha,
         "branch": GITHUB_BRANCH
     }
     r = requests.put(url, headers=github_headers(), json=data)
